@@ -1,0 +1,149 @@
+🧱 ARCHITETTURA COMPLETA
+👤 L'utente fa login → invia username e password
+
+✅ Se le credenziali sono giuste, il server crea un JWT (con dati tipo username, ruolo, scadenza)
+
+📬 Il client salva il token e lo invia in ogni richiesta come header Authorization: Bearer <token>
+
+🧪 Spring intercetta ogni richiesta, verifica il token tramite un filtro (JwtFilter)
+
+🔐 Se il token è valido, Spring "ricorda" l'utente per quella richiesta e applica le autorizzazioni
+
+📌 STEP 1 — JwtUtil.java: Gestione token
+Questa classe si occupa di:
+Creare un token
+Verificarlo
+Estrarre dati da esso
+🔍 Analisi riga per riga
+
+private static final String SECRET_KEY = "SuperSegreta2025";
+🔐 Chiave segreta per firmare il token.
+Chi ce l’ha, può creare token validi. Non va mai condivisa! (di solito è in application.properties)
+
+private final Algorithm algorithm = Algorithm.HMAC256(SECRET_KEY);
+private final JWTVerifier verifier = JWT.require(algorithm).build();
+Algorithm.HMAC256: Algoritmo di firma (qui con SHA-256 e chiave)
+
+JWTVerifier: oggetto che può verificare la firma e la validità di un token
+
+
+public String generateToken(UserDetails userDetails)
+🔧 Crea un token firmato contenente:
+
+subject = username
+
+claim = ruolo
+
+iat = data creazione
+
+exp = data scadenza
+
+String role = userDetails.getAuthorities().iterator().next().getAuthority();
+👤 Estrai il ruolo dell’utente (es. ROLE_ADMIN)
+
+return JWT.create()
+    .withSubject(userDetails.getUsername())
+    .withClaim("role", role)
+    .withIssuedAt(new Date())
+    .withExpiresAt(new Date(System.currentTimeMillis() + EXPIRATION))
+    .sign(algorithm);
+📦 Costruisce e firma il token JWT.
+
+public boolean isTokenValid(String token, String username)
+✅ Verifica:
+
+Che il token contenga lo username corretto
+
+Che non sia scaduto
+
+Che la firma sia valida
+
+📌 STEP 2 — JwtFilter.java: Intercetta ogni richiesta
+Estende OncePerRequestFilter = eseguito una volta per richiesta.
+
+🔍 Cosa fa?
+
+String header = request.getHeader("Authorization");
+👉 Legge l’header Authorization: Bearer <token>
+
+if (header != null && header.startsWith("Bearer ")) {
+    String token = header.substring(7); // taglia "Bearer "
+
+String username = jwtUtil.extractUsername(token);
+📤 Legge lo username dal token
+
+UserDetails userDetails = userDetailsService.loadUserByUsername(username);
+🔁 Ricarica l’utente dal DB/in-memory per confrontarlo con il token
+
+UsernamePasswordAuthenticationToken authToken =
+    new UsernamePasswordAuthenticationToken(userDetails, null, userDetails.getAuthorities());
+SecurityContextHolder.getContext().setAuthentication(authToken);
+🔐 Qui "inietti" l’utente nel SecurityContext di Spring, rendendolo autenticato per questa richiesta.
+
+📌 STEP 3 — SecurityConfig.java: Configurazione di Spring Security
+Questa classe dice a Spring:
+
+🔓 Quali endpoint sono pubblici (permitAll())
+
+🔒 Quali endpoint richiedono autenticazione
+
+➕ Quali ruoli sono richiesti per certi path
+
+🧼 Come trattare CORS e CSRF
+
+➕ Aggiunge il tuo JwtFilter nel meccanismo di sicurezza
+
+
+.requestMatchers("/api/login").permitAll()
+➡️ /api/login può essere raggiunto senza autenticazione
+
+.anyRequest().authenticated()
+🔐 Tutto il resto richiede un token JWT valido
+
+.addFilterBefore(jwtFilter, UsernamePasswordAuthenticationFilter.class);
+📌 Inserisce il tuo filtro prima di quello standard che aspetta una form login.
+
+📌 STEP 4 — LoginController.java: Autenticazione
+Espone l'endpoint:
+
+POST /api/login
+
+authManager.authenticate(new UsernamePasswordAuthenticationToken(username, password));
+🔐 Chiede a Spring Security di verificare username + password.
+
+String token = jwtUtil.generateToken(user);
+✅ Se tutto va bene, crea un JWT
+
+return ResponseEntity.ok(Map.of("token", token));
+📤 Restituisce il token come JSON
+
+📌 STEP 5 — UserDetailsService
+Dove sta la logica per caricare l’utente?
+Spring usa un bean di tipo UserDetailsService.
+
+Esempio:
+
+@Service
+public class CustomUserDetailsService implements UserDetailsService {
+    private final UserRepository userRepository;
+
+    public CustomUserDetailsService(UserRepository repo) {
+        this.userRepository = repo;
+    }
+
+    @Override
+    public UserDetails loadUserByUsername(String username) {
+        return userRepository.findByUsername(username)
+               .orElseThrow(() -> new UsernameNotFoundException("Not found"));
+    }
+}
+🔄 Come funziona tutto insieme?
+L'utente fa login → riceve token JWT
+
+Ogni richiesta include Authorization: Bearer <token>
+
+JwtFilter intercetta, verifica e "autentica" l’utente
+
+SecurityContext contiene l’utente → Spring può applicare i @PreAuthorize(...)
+
+Se non hai un token valido → 403 Forbidden
